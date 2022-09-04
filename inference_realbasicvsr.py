@@ -127,7 +127,7 @@ def main():
 			'ffmpeg -pix_fmt bgr24 -f rawvideo -s {}x{} -r {} -i - -c:v {} -vtag {} -pix_fmt {} -crf {} -preset {} -c:a copy {}'.format(
 				video_reader.width, video_reader.height, video_reader.fps,
 				configs.ffmpeg.vcodec, configs.ffmpeg.vtag, configs.ffmpeg.pix_fmt, configs.ffmpeg.crf, configs.ffmpeg.preset, args.output_dir
-			), shell=False, stdin=subprocess.PIPE
+			), shell=True, stdin=subprocess.PIPE
 		)
 		for i in range(0, outputs.size(1)):
 			img = tensor2img(outputs[:, i, :, :, :])
