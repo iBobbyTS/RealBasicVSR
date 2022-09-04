@@ -1,5 +1,6 @@
-vcodec = 'libx265'
-vtag = 'hvc1'
+vcodec = 'libx264'
+vtag = 'avc1'
 pix_fmt = 'yuv420p'
-crf = 24
-preset = 'slow'
+crf = 28
+preset = 'fast'
+resize = ''

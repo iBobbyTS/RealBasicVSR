@@ -1,6 +1,7 @@
 import argparse
 import glob
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 import subprocess
 
 import cv2
@@ -81,9 +82,9 @@ def main():
 	file_extension = os.path.splitext(args.input_dir)[1]
 	if file_extension in VIDEO_EXTENSIONS:  # input is a video file
 		video_reader = mmcv.VideoReader(args.input_dir)
+		ori_w = video_reader.width
+		ori_h = video_reader.height
 		inputs = []
-		for frame in video_reader:
-			inputs.append(np.flip(frame, axis=2))
 	elif file_extension == '':  # input is a directory
 		inputs = []
 		input_paths = sorted(glob.glob(f'{args.input_dir}/*'))
@@ -92,47 +93,53 @@ def main():
 			inputs.append(img)
 	else:
 		raise ValueError('"input_dir" can only be a video or a directory.')
+	out_w = ori_w * 4
+	out_h = ori_h * 4
 
 	for i, img in enumerate(inputs):
 		img = torch.from_numpy(img / 255.).permute(2, 0, 1).float()
 		inputs[i] = img.unsqueeze(0)
-	inputs = torch.stack(inputs, dim=1)
+	# Only for imgs
+	# inputs = torch.stack(inputs, dim=1)
 
 	# map to cuda, if available
 	cuda_flag = False
 	if torch.cuda.is_available():
 		model = model.cuda()
 		cuda_flag = True
+	# Configure out pipe
+
+	if os.path.splitext(args.output_dir)[1] in VIDEO_EXTENSIONS:
+		output_dir = os.path.dirname(args.output_dir)
+		mmcv.mkdir_or_exist(output_dir)
+		video_writer = subprocess.Popen(
+			'ffmpeg -pix_fmt bgr24 -f rawvideo -s {}x{} -r {} -i - {} -c:v {} -vtag {} -pix_fmt {} -crf {} -preset {} -c:a copy {} -y'.format(
+				out_w, out_h, video_reader.fps,
+				configs.ffmpeg.resize, configs.ffmpeg.vcodec, configs.ffmpeg.vtag, configs.ffmpeg.pix_fmt,
+				configs.ffmpeg.crf, configs.ffmpeg.preset, args.output_dir
+			), shell=True, stdin=subprocess.PIPE
+		)
 
 	with torch.no_grad():
 		if isinstance(args.max_seq_len, int):
 			outputs = []
-			for i in range(0, inputs.size(1), args.max_seq_len):
-				imgs = inputs[:, i:i + args.max_seq_len, :, :, :]
+			for i in range(0, video_reader.frame_cnt, args.max_seq_len):
+				imgs = torch.empty((1, args.max_seq_len, ori_h, ori_w, 3), dtype=torch.uint8)
+				for j in range(args.max_seq_len):
+					imgs[0, j, :, :, :] = torch.from_numpy(video_reader.next())
 				if cuda_flag:
 					imgs = imgs.cuda()
-				outputs.append(model(imgs, test_mode=True)['output'].cpu())
-			outputs = torch.cat(outputs, dim=1)
+				imgs = imgs.permute(0, 1, 4, 2, 3).float() / 255.
+				outputs = model(imgs, test_mode=True)['output']
+				outputs = (outputs[0].permute(0, 2, 3, 1)*255.0).round().clamp(0, 255).byte().cpu().numpy()
+				for output in outputs:
+					video_writer.stdin.write(output.tobytes())
 		else:
 			if cuda_flag:
 				inputs = inputs.cuda()
 			outputs = model(inputs, test_mode=True)['output'].cpu()
 
 	if os.path.splitext(args.output_dir)[1] in VIDEO_EXTENSIONS:
-		output_dir = os.path.dirname(args.output_dir)
-		mmcv.mkdir_or_exist(output_dir)
-
-		h, w = outputs.shape[-2:]
-		video_writer = subprocess.Popen(
-			'ffmpeg -pix_fmt bgr24 -f rawvideo -s {}x{} -r {} -i - -c:v {} -vtag {} -pix_fmt {} -crf {} -preset {} -c:a copy {}'.format(
-				video_reader.width, video_reader.height, video_reader.fps,
-				configs.ffmpeg.vcodec, configs.ffmpeg.vtag, configs.ffmpeg.pix_fmt, configs.ffmpeg.crf, configs.ffmpeg.preset, args.output_dir
-			), shell=True, stdin=subprocess.PIPE
-		)
-		for i in range(0, outputs.size(1)):
-			img = tensor2img(outputs[:, i, :, :, :])
-			video_writer.stdin.write(img.astype(np.uint8))
-		cv2.destroyAllWindows()
 		video_writer.communicate()
 		video_writer.terminate()
 	else:
